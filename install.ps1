@@ -776,8 +776,10 @@ switch ($Action) {
         else {
             $remote = (
                 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass ' +
-                '-Command "psmux new-session -A -s {0}"' -f
-                $config.SessionName
+                '-Command "$shell = if (Get-Command pwsh.exe ' +
+                '-ErrorAction SilentlyContinue) { ''pwsh.exe'' } else { ' +
+                '''powershell.exe'' }; psmux new-session -A -s ' +
+                $config.SessionName + ' -- $shell"'
             )
             & ssh -tt @sshArgs $remote
         }

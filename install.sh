@@ -321,7 +321,7 @@ case "$action" in
       exec ssh "${options[@]}" "$@"
     else
       exec ssh -tt "${options[@]}" \
-        "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"psmux new-session -A -s $DEVBOX_SESSION\""
+        "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"\$shell = if (Get-Command pwsh.exe -ErrorAction SilentlyContinue) { 'pwsh.exe' } else { 'powershell.exe' }; psmux new-session -A -s $DEVBOX_SESSION -- \$shell\""
     fi
     ;;
   *)

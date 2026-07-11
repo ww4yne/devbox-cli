@@ -116,6 +116,8 @@ The first SSH connection asks the user to verify the host-key fingerprint.
 - After a full reboot, the tunnel becomes available once that user logs in.
 - psmux preserves the remote process across SSH, terminal, and network
   disconnects. It does not preserve processes across a Windows reboot.
+- New psmux sessions prefer PowerShell 7 (`pwsh.exe`) and fall back to the
+  built-in Windows PowerShell 5 (`powershell.exe`) when PS7 is unavailable.
 - Tunnel IDs are independent of the local `devbox` command name.
 
 ## Safer installation
