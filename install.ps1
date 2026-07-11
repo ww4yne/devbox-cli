@@ -661,8 +661,14 @@ function Get-TunnelProcess {
             -ErrorAction SilentlyContinue
         if (-not $process) { return $null }
         if ($process.Path -ne $metadata.ExecutablePath) { return $null }
-        if ($process.StartTime.ToUniversalTime().ToString('o') -ne
-            $metadata.StartTimeUtc) {
+        $expectedStartTicks = if ($metadata.StartTimeUtcTicks) {
+            [long]$metadata.StartTimeUtcTicks
+        }
+        else {
+            ([DateTimeOffset]$metadata.StartTimeUtc).UtcDateTime.Ticks
+        }
+        if ($process.StartTime.ToUniversalTime().Ticks -ne
+            $expectedStartTicks) {
             return $null
         }
         return $process
@@ -751,6 +757,7 @@ function Start-Tunnel {
             ProcessId = $process.Id
             ExecutablePath = $process.Path
             StartTimeUtc = $process.StartTime.ToUniversalTime().ToString('o')
+            StartTimeUtcTicks = $process.StartTime.ToUniversalTime().Ticks
         } | ConvertTo-Json | Set-Content $processFile -Encoding UTF8
 
         $deadline = (Get-Date).AddSeconds(180)
@@ -802,7 +809,7 @@ switch ($Action) {
             TunnelId = $config.TunnelId
             ProcessId = if ($process) { $process.Id } else { $null }
             Port = $port
-            Ready = Test-TcpPort $port
+            Ready = [bool]$process -and (Test-TcpPort $port)
         }
     }
     'stop' { Stop-Tunnel }
@@ -865,6 +872,7 @@ function Install-Client(
     [string]$SelectedSshUser,
     [string]$SelectedSessionName,
     [string]$SelectedIdentityFile,
+    [bool]$SessionNameWasSpecified,
     [bool]$IdentityFileWasSpecified
 ) {
     Install-WingetPackage -PackageId Microsoft.devtunnel -CommandName devtunnel
@@ -895,8 +903,10 @@ function Install-Client(
     if (-not $SelectedSshUser) {
         $SelectedSshUser = Read-Required 'Remote Windows SSH user'
     }
-    $SelectedSessionName = Read-Required 'Persistent psmux session' `
-        $SelectedSessionName
+    if (-not $SessionNameWasSpecified) {
+        $SelectedSessionName = Read-Required 'Persistent psmux session' `
+            $SelectedSessionName
+    }
     Assert-SessionName $SelectedSessionName
 
     if (-not $IdentityFileWasSpecified) {
@@ -927,6 +937,7 @@ switch ($Mode) {
             -SelectedSshUser $SshUser `
             -SelectedSessionName $SessionName `
             -SelectedIdentityFile $IdentityFile `
+            -SessionNameWasSpecified $PSBoundParameters.ContainsKey('SessionName') `
             -IdentityFileWasSpecified $PSBoundParameters.ContainsKey('IdentityFile')
     }
 }
