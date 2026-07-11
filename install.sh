@@ -84,7 +84,7 @@ case "$session_name" in
     ;;
 esac
 
-printf '%s' "SSH private key path (optional; Enter for SSH defaults/password): " >/dev/tty
+printf '%s' "SSH private key path (optional; Enter for password authentication): " >/dev/tty
 IFS= read -r identity_file </dev/tty
 case "$identity_file" in
   "~/"*) identity_file="$HOME/${identity_file#~/}" ;;
@@ -307,6 +307,11 @@ case "$action" in
     )
     if [[ -n "$DEVBOX_IDENTITY_FILE" ]]; then
       options+=(-i "$DEVBOX_IDENTITY_FILE" -o IdentitiesOnly=yes)
+    else
+      options+=(
+        -o PubkeyAuthentication=no
+        -o PreferredAuthentications=password,keyboard-interactive
+      )
     fi
     options+=(127.0.0.1)
 

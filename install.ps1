@@ -734,6 +734,12 @@ function Get-SshArguments {
             '-o', 'IdentitiesOnly=yes'
         ))
     }
+    else {
+        $arguments.AddRange([string[]]@(
+            '-o', 'PubkeyAuthentication=no',
+            '-o', 'PreferredAuthentications=password,keyboard-interactive'
+        ))
+    }
     $arguments.Add('127.0.0.1')
     return $arguments.ToArray()
 }
@@ -843,7 +849,7 @@ function Install-Client(
 
     if (-not $IdentityFileWasSpecified) {
         $SelectedIdentityFile = Read-Host (
-            'SSH private key path (optional; Enter for SSH defaults/password)'
+            'SSH private key path (optional; Enter for password authentication)'
         )
     }
     if ($SelectedIdentityFile) {

@@ -95,9 +95,11 @@ Dev Tunnels authentication and SSH authentication are separate.
 - Dev Tunnels controls access to the private relay.
 - OpenSSH authenticates the Windows account and verifies the host.
 
-The client supports normal SSH defaults/password authentication or an optional
-private-key path. Public keys are recommended. Configure the matching public key
-in the Windows account's `authorized_keys` before disabling password login.
+Leaving the private-key path empty explicitly uses password/keyboard-interactive
+authentication and disables automatic public-key discovery. Providing a private
+key enables key-only authentication (`IdentitiesOnly=yes`). Configure the
+matching public key in the Windows account's `authorized_keys` before selecting
+that mode.
 
 The first SSH connection asks the user to verify the host-key fingerprint.
 
