@@ -55,16 +55,21 @@ login and configuration work correctly when the script is piped to `sh`.
 1. Installs and enables Windows OpenSSH Server.
 2. Installs [psmux](https://github.com/psmux/psmux).
 3. Installs Microsoft Dev Tunnels CLI.
-4. Prompts for Dev Tunnels login and a unique private tunnel ID.
-5. Creates or reuses the tunnel and publishes local TCP 22.
+4. Prompts for Dev Tunnels login.
+5. Creates a service-assigned unique private tunnel (or reuses the full
+   canonical ID passed with `-TunnelId`) and publishes local TCP 22.
 6. Installs a single-instance, self-restarting tunnel host wrapper with a
    watchdog that recovers from silent "no-host" states (relay drops and Dev
    Tunnels access-token refresh failures).
 7. Registers a per-user logon task.
+8. Waits for `Host connections >= 1`; setup fails instead of reporting success
+   if port 22 or the host connection is not healthy.
 
 The tunnel is private. The installer never uses `--allow-anonymous`.
 OpenSSH is configured to listen only on `127.0.0.1` and `::1`; the Dev Tunnels
 host reaches it locally, so broad firewall policies cannot expose SSH directly.
+Record the full tunnel ID printed by successful setup, including its cluster
+suffix (for example, `peaceful-chair-5rf00qz.asse`). Clients require that ID.
 
 ### Client mode
 
@@ -118,6 +123,9 @@ The first SSH connection asks the user to verify the host-key fingerprint.
   disconnects. It does not preserve processes across a Windows reboot.
 - New psmux sessions prefer PowerShell 7 (`pwsh.exe`) and fall back to the
   built-in Windows PowerShell 5 (`powershell.exe`) when PS7 is unavailable.
+- Reinstalling a server with an existing tunnel requires its full canonical ID:
+  `.\install.ps1 -Mode Server -TunnelId <id.cluster>`. Omitting `-TunnelId`
+  creates a new service-assigned unique tunnel and avoids custom-name conflicts.
 - Tunnel IDs are independent of the local `devbox` command name.
 
 ## Safer installation

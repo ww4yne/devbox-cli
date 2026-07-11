@@ -443,83 +443,135 @@ WScript.Quit exitCode
     return $taskName
 }
 
+function Get-CanonicalTunnelId([string[]]$ShowOutput) {
+    foreach ($line in $ShowOutput) {
+        if ($line -match '^\s*Tunnel ID\s*:\s*(\S+)\s*$') {
+            return $matches[1]
+        }
+    }
+    throw 'Could not read the canonical tunnel ID from devtunnel show.'
+}
+
 function Ensure-Tunnel(
     [string]$Devtunnel,
     [string]$SelectedTunnelId
 ) {
     $ErrorActionPreference = 'SilentlyContinue'
-    & $Devtunnel show $SelectedTunnelId --json *> $null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Step "Creating private tunnel $SelectedTunnelId"
-        & $Devtunnel create $SelectedTunnelId `
-            --description 'Persistent SSH development access'
-        if ($LASTEXITCODE -ne 0) {
-            Ensure-DevtunnelLogin $Devtunnel -Force
-            & $Devtunnel show $SelectedTunnelId --json *> $null
-            if ($LASTEXITCODE -ne 0) {
-                & $Devtunnel create $SelectedTunnelId `
-                    --description 'Persistent SSH development access'
-                if ($LASTEXITCODE -ne 0) {
-                    throw "Failed to create tunnel $SelectedTunnelId."
-                }
-            }
-        }
-    }
-    else {
-        Write-Host "Tunnel already exists: $SelectedTunnelId"
+    $showOutput = @()
+
+    if ($SelectedTunnelId) {
+        $showOutput = @(& $Devtunnel show $SelectedTunnelId 2>$null)
     }
 
-    $accessJson = & $Devtunnel access list $SelectedTunnelId --json
-    if ($LASTEXITCODE -ne 0) {
-        Ensure-DevtunnelLogin $Devtunnel -Force
-        $accessJson = & $Devtunnel access list $SelectedTunnelId --json
+    if (-not $SelectedTunnelId -or $LASTEXITCODE -ne 0) {
+        $label = if ($SelectedTunnelId) { $SelectedTunnelId } else { 'a unique ID' }
+        Write-Step "Creating private tunnel with $label"
+        $createArguments = @('create')
+        if ($SelectedTunnelId) { $createArguments += $SelectedTunnelId }
+        $createArguments += @(
+            '--description',
+            'Persistent SSH development access'
+        )
+        $createOutput = @(& $Devtunnel @createArguments 2>&1)
+        if ($createOutput) { Write-Host ($createOutput -join [Environment]::NewLine) }
+        if ($LASTEXITCODE -ne 0) {
+            throw (
+                "Could not show or create tunnel '$SelectedTunnelId'. " +
+                'Verify Dev Tunnels login. To reuse a tunnel, pass the full ' +
+                'ID shown by `devtunnel list` (including its cluster suffix).'
+            )
+        }
+
+        # `create` makes the new tunnel the CLI default. Querying without an ID
+        # obtains the service-assigned cluster suffix without guessing it.
+        $showOutput = @(& $Devtunnel show 2>&1)
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Tunnel was created but its canonical ID could not be read.'
+        }
     }
+
+    $canonicalId = Get-CanonicalTunnelId $showOutput
+    Write-Host "Tunnel ID: $canonicalId"
+
+    $accessJson = & $Devtunnel access list $canonicalId --json
     if ($LASTEXITCODE -ne 0) {
-        throw "Failed to inspect access controls for $SelectedTunnelId."
+        throw "Failed to inspect access controls for $canonicalId."
     }
     $accessEntries = @(($accessJson | ConvertFrom-Json).accessControlEntries)
     if ($accessEntries.Count -gt 0) {
         throw (
-            "Tunnel $SelectedTunnelId has custom access controls. " +
+            "Tunnel $canonicalId has custom access controls. " +
             'Use a fresh private tunnel ID or review/reset its ACL manually.'
         )
     }
 
-    $json = & $Devtunnel port list $SelectedTunnelId --json
+    $json = & $Devtunnel port list $canonicalId --json
     if ($LASTEXITCODE -ne 0) {
-        Ensure-DevtunnelLogin $Devtunnel -Force
-        $json = & $Devtunnel port list $SelectedTunnelId --json
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to list ports for tunnel $SelectedTunnelId."
-        }
+        throw "Failed to list ports for tunnel $canonicalId."
     }
     $ports = ($json | ConvertFrom-Json).ports
     if (-not ($ports | Where-Object portNumber -eq 22)) {
         Write-Step 'Publishing the OpenSSH port'
-        & $Devtunnel port create $SelectedTunnelId `
+        & $Devtunnel port create $canonicalId `
             --port-number 22 --protocol auto --description OpenSSH
         if ($LASTEXITCODE -ne 0) {
             throw 'Failed to publish SSH port 22.'
         }
-    }
-    else {
-        Write-Host 'Tunnel port 22 already exists.'
+
+        $json = & $Devtunnel port list $canonicalId --json
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to verify ports for tunnel $canonicalId."
+        }
+        $portsAfterCreate = ($json | ConvertFrom-Json).ports
+        if (-not ($portsAfterCreate | Where-Object portNumber -eq 22)) {
+            throw "Tunnel $canonicalId does not list port 22 after creation."
+        }
     }
 
-    $portAccessJson = & $Devtunnel access list $SelectedTunnelId `
+    $portAccessJson = & $Devtunnel access list $canonicalId `
         --port-number 22 --json
     if ($LASTEXITCODE -ne 0) {
-        throw "Failed to inspect port-level access controls for $SelectedTunnelId."
+        throw "Failed to inspect port-level access controls for $canonicalId."
     }
     $portAccessEntries = @(
         ($portAccessJson | ConvertFrom-Json).accessControlEntries
     )
     if ($portAccessEntries.Count -gt 0) {
         throw (
-            "Tunnel port 22 on $SelectedTunnelId has custom access controls. " +
+            "Tunnel port 22 on $canonicalId has custom access controls. " +
             'Use a fresh private tunnel ID or review/reset its ACL manually.'
         )
     }
+
+    return $canonicalId
+}
+
+function Wait-TunnelHost([string]$Devtunnel, [string]$TunnelId) {
+    $ErrorActionPreference = 'SilentlyContinue'
+    Write-Step 'Waiting for the tunnel host connection'
+    $deadline = (Get-Date).AddSeconds(120)
+
+    do {
+        Start-Sleep -Seconds 3
+        $showOutput = @(& $Devtunnel show $TunnelId 2>$null)
+        if ($LASTEXITCODE -eq 0) {
+            foreach ($line in $showOutput) {
+                if ($line -match '^\s*Host connections\s*:\s*(\d+)\s*$') {
+                    if ([int]$matches[1] -ge 1) {
+                        Write-Host 'Tunnel host connection is ready.'
+                        return
+                    }
+                }
+            }
+        }
+    } while ((Get-Date) -lt $deadline)
+
+    $log = Join-Path $HOME ".devbox-cli\server\$TunnelId\host.log"
+    if (Test-Path $log) {
+        Write-Host 'Last host log lines:' -ForegroundColor Yellow
+        Get-Content $log -Tail 30
+    }
+    throw "Tunnel $TunnelId did not establish a host connection within 120 seconds."
 }
 
 function Install-Server([string]$SelectedTunnelId) {
@@ -530,12 +582,10 @@ function Install-Server([string]$SelectedTunnelId) {
     $devtunnel = Resolve-Devtunnel
     Ensure-DevtunnelLogin $devtunnel
 
-    if (-not $SelectedTunnelId) {
-        $SelectedTunnelId = Read-Required 'Private tunnel ID (unique, lowercase)'
-    }
-    Assert-TunnelId $SelectedTunnelId
-    Ensure-Tunnel $devtunnel $SelectedTunnelId
+    if ($SelectedTunnelId) { Assert-TunnelId $SelectedTunnelId }
+    $SelectedTunnelId = Ensure-Tunnel $devtunnel $SelectedTunnelId
     $taskName = Install-ServerHostScript $SelectedTunnelId
+    Wait-TunnelHost $devtunnel $SelectedTunnelId
 
     $remoteUser = (& whoami).Trim()
     Write-Host "`nServer setup complete." -ForegroundColor Green
