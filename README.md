@@ -115,9 +115,10 @@ The first SSH connection asks the user to verify the host-key fingerprint.
 - The host wrapper runs a watchdog: it polls `devtunnel show` and scans the
   host process output, and restarts the child within ~30–90 s if the tunnel
   stops hosting after a relay drop or an access-token refresh failure (the
-  "child still running but no longer hosting" state). The client waits up to
-  ~180 s for a healthy forwarded port, so brief relay flaps and host restarts
-  are transparent to `devbox`.
+  "child still running but no longer hosting" state). A new client connection
+  waits up to ~180 s for a healthy forwarded port. An existing SSH connection
+  can still disconnect during recovery; run `devbox` again to reattach the
+  preserved psmux session.
 - After a full reboot, the tunnel becomes available once that user logs in.
 - psmux preserves the remote process across SSH, terminal, and network
   disconnects. It does not preserve processes across a Windows reboot.
@@ -127,6 +128,17 @@ The first SSH connection asks the user to verify the host-key fingerprint.
   `.\install.ps1 -Mode Server -TunnelId <id.cluster>`. Omitting `-TunnelId`
   creates a new service-assigned unique tunnel and avoids custom-name conflicts.
 - Tunnel IDs are independent of the local `devbox` command name.
+
+This is a self-healing single access path, not a redundant high-availability
+system. See [Availability and recovery](docs/availability.md) for recovery
+timings, dependencies, known gaps, and the operator runbook.
+
+## Extensions
+
+[Reverse SSH through an operator-managed bastion](docs/extensions/reverse-ssh.md)
+documents an optional OpenSSH-only access path for restricted clients. The
+project does not configure or operate the bastion, and the extension never
+requires direct inbound SSH to the Windows machine.
 
 ## Safer installation
 
