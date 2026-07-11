@@ -10,6 +10,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+# PowerShell 7.4+ turns any native-command non-zero exit into a terminating
+# error when ErrorActionPreference is Stop. This installer checks
+# $LASTEXITCODE explicitly (e.g. "does this tunnel already exist?"), so opt
+# out of that behavior to keep those idempotent checks working.
+$PSNativeCommandUseErrorActionPreference = $false
 
 if ($env:OS -ne 'Windows_NT') {
     throw 'install.ps1 supports Windows only. On macOS, use install.sh.'
@@ -556,6 +561,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false
 $configFile = Join-Path $HOME '.devbox-cli\client\config.json'
 if (-not (Test-Path $configFile)) {
     throw "Client config not found: $configFile"
