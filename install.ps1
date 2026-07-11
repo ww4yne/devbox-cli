@@ -407,10 +407,24 @@ finally {
         $powerShell = (Get-Command powershell.exe).Source
     }
 
-    $action = New-ScheduledTaskAction -Execute $powerShell -Argument (
-        '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden ' +
-        '-ExecutionPolicy Bypass ' +
-        ('-File "{0}" -TunnelId "{1}"' -f $hostScript, $SelectedTunnelId)
+    # Interactive logon tasks can still flash or retain a console window even
+    # when PowerShell receives -WindowStyle Hidden. Launch through WScript with
+    # window style 0 instead; waitOnReturn keeps Task Scheduler supervision.
+    $launcherScript = Join-Path $serverDir 'host-hidden.vbs'
+    $hostCommand = (
+        '"{0}" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass ' +
+        '-File "{1}" -TunnelId "{2}"'
+    ) -f $powerShell, $hostScript, $SelectedTunnelId
+    $escapedHostCommand = $hostCommand.Replace('"', '""')
+    @"
+Set shell = CreateObject("WScript.Shell")
+exitCode = shell.Run("$escapedHostCommand", 0, True)
+WScript.Quit exitCode
+"@ | Set-Content -Path $launcherScript -Encoding ASCII
+
+    $wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
+    $action = New-ScheduledTaskAction -Execute $wscript -Argument (
+        '//B //NoLogo "{0}"' -f $launcherScript
     )
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
     $principal = New-ScheduledTaskPrincipal -UserId $currentUser `
