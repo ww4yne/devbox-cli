@@ -90,6 +90,7 @@ function Resolve-Devtunnel {
 }
 
 function Test-DevtunnelLogin([string]$Devtunnel) {
+    $ErrorActionPreference = 'SilentlyContinue'
     $json = & $Devtunnel user show --json 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $json) { return $false }
     try {
@@ -104,6 +105,7 @@ function Ensure-DevtunnelLogin(
     [string]$Devtunnel,
     [switch]$Force
 ) {
+    $ErrorActionPreference = 'SilentlyContinue'
     if (-not $Force -and (Test-DevtunnelLogin $Devtunnel)) {
         Write-Host 'Dev Tunnels login is already active.'
         return
@@ -430,6 +432,7 @@ function Ensure-Tunnel(
     [string]$Devtunnel,
     [string]$SelectedTunnelId
 ) {
+    $ErrorActionPreference = 'SilentlyContinue'
     & $Devtunnel show $SelectedTunnelId --json *> $null
     if ($LASTEXITCODE -ne 0) {
         Write-Step "Creating private tunnel $SelectedTunnelId"
@@ -800,13 +803,20 @@ function Install-Client(
     }
     Assert-TunnelId $SelectedTunnelId
 
-    & $devtunnel show $SelectedTunnelId --json *> $null
-    if ($LASTEXITCODE -ne 0) {
-        Ensure-DevtunnelLogin $devtunnel -Force
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    try {
         & $devtunnel show $SelectedTunnelId --json *> $null
         if ($LASTEXITCODE -ne 0) {
-            throw "Tunnel is missing or inaccessible: $SelectedTunnelId"
+            Ensure-DevtunnelLogin $devtunnel -Force
+            & $devtunnel show $SelectedTunnelId --json *> $null
+            if ($LASTEXITCODE -ne 0) {
+                throw "Tunnel is missing or inaccessible: $SelectedTunnelId"
+            }
         }
+    }
+    finally {
+        $ErrorActionPreference = $prevEap
     }
 
     if (-not $SelectedSshUser) {
