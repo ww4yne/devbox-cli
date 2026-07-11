@@ -57,7 +57,9 @@ login and configuration work correctly when the script is piped to `sh`.
 3. Installs Microsoft Dev Tunnels CLI.
 4. Prompts for Dev Tunnels login and a unique private tunnel ID.
 5. Creates or reuses the tunnel and publishes local TCP 22.
-6. Installs a single-instance, self-restarting tunnel host wrapper.
+6. Installs a single-instance, self-restarting tunnel host wrapper with a
+   watchdog that recovers from silent "no-host" states (relay drops and Dev
+   Tunnels access-token refresh failures).
 7. Registers a per-user logon task.
 
 The tunnel is private. The installer never uses `--allow-anonymous`.
@@ -103,6 +105,12 @@ The first SSH connection asks the user to verify the host-key fingerprint.
 
 - The server task is triggered at Windows user logon and runs with that user's
   Dev Tunnels login. It does not store the Windows password.
+- The host wrapper runs a watchdog: it polls `devtunnel show` and scans the
+  host process output, and restarts the child within ~30–90 s if the tunnel
+  stops hosting after a relay drop or an access-token refresh failure (the
+  "child still running but no longer hosting" state). The client waits up to
+  ~180 s for a healthy forwarded port, so brief relay flaps and host restarts
+  are transparent to `devbox`.
 - After a full reboot, the tunnel becomes available once that user logs in.
 - psmux preserves the remote process across SSH, terminal, and network
   disconnects. It does not preserve processes across a Windows reboot.

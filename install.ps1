@@ -202,11 +202,24 @@ param(
     [string]$TunnelId
 )
 
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'
 $stateDir = Join-Path $HOME ".devbox-cli\server\$TunnelId"
 $logFile = Join-Path $stateDir 'host.log'
 $maxLogBytes = 10MB
 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+
+# Watchdog tuning. The child `devtunnel host` can enter a "silent no-host"
+# state after a relay drop or an access-token refresh failure: the process
+# keeps running but stops hosting. The watchdog restarts the child on:
+#   - host connections 0 for 2 consecutive polls (~60s);
+#   - `devtunnel show` failing for 3 consecutive polls (~90s auth/net outage);
+#   - an auth/token failure printed by the child (immediate).
+$WatchdogIntervalSec  = 30
+$WatchdogMaxZeroPolls = 2
+$WatchdogMaxNullPolls = 3
+$AuthFailurePattern =
+    '(?i)(access token is not valid|Refreshing tunnel access token failed|' +
+    'Error connecting host tunnel session|response status code:\s*Unauthorized)'
 
 function Resolve-Devtunnel {
     $command = Get-Command devtunnel -ErrorAction SilentlyContinue
@@ -226,6 +239,55 @@ function Rotate-Log {
     }
 }
 
+function Write-HostLog([string]$msg) {
+    Add-Content -LiteralPath $logFile `
+        -Value ('[{0:u}] {1}' -f (Get-Date), $msg) -Encoding utf8
+}
+
+function Drain-Sidecar([string]$path, [ref]$posRef) {
+    # Appends new child output to the log; returns the new chunk (or '').
+    if (-not (Test-Path -LiteralPath $path)) { return '' }
+    try {
+        $stream = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+        try {
+            $len = $stream.Length
+            if ($len -gt $posRef.Value) {
+                $stream.Seek($posRef.Value, 'Begin') | Out-Null
+                $reader = New-Object System.IO.StreamReader($stream)
+                $chunk = $reader.ReadToEnd()
+                if ($chunk.Length -gt 0) {
+                    Add-Content -LiteralPath $logFile `
+                        -Value $chunk.TrimEnd("`r", "`n") -Encoding utf8
+                }
+                $posRef.Value = $len
+                return $chunk
+            }
+        } finally { $stream.Close() }
+    } catch {
+        Write-HostLog "drain-sidecar error on ${path}: $($_.Exception.Message)"
+    }
+    return ''
+}
+
+function Get-HostConnectionCount([string]$exe, [string]$tunnel) {
+    # Int32 host connection count, or $null if the query failed.
+    try {
+        $out = & $exe show $tunnel 2>$null
+        if ($LASTEXITCODE -ne 0) { return $null }
+        foreach ($line in $out) {
+            if ($line -match '^\s*Host connections\s*:\s*(\d+)') {
+                return [int]$matches[1]
+            }
+        }
+        return $null
+    } catch { return $null }
+}
+
+function Stop-Child($proc) {
+    try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop }
+    catch { Write-HostLog "watchdog: kill failed: $($_.Exception.Message)" }
+}
+
 $safeId = $TunnelId -replace '[^A-Za-z0-9_.-]', '_'
 $createdNew = $false
 $mutex = [Threading.Mutex]::new(
@@ -236,22 +298,95 @@ $mutex = [Threading.Mutex]::new(
 if (-not $createdNew) { exit 0 }
 
 $devtunnel = Resolve-Devtunnel
+$sidecarOut = Join-Path $stateDir 'child.out.log'
+$sidecarErr = Join-Path $stateDir 'child.err.log'
+$backoffSec = 2
+$backoffMax = 60
+
 try {
+    Rotate-Log
+    Write-HostLog "wrapper start (pid=$PID, tunnel=$TunnelId)"
     while ($true) {
         Rotate-Log
-        Add-Content $logFile (
-            "[{0:u}] starting tunnel host: {1}" -f (Get-Date), $TunnelId
-        )
-        & $devtunnel host $TunnelId 2>&1 |
-            Tee-Object -FilePath $logFile -Append
-        Add-Content $logFile (
-            "[{0:u}] host exited ({1}); retrying in 5 seconds" -f
-            (Get-Date), $LASTEXITCODE
-        )
-        Start-Sleep -Seconds 5
+        $startedAt = Get-Date
+        Set-Content -LiteralPath $sidecarOut -Value '' -Encoding utf8 -NoNewline
+        Set-Content -LiteralPath $sidecarErr -Value '' -Encoding utf8 -NoNewline
+        $outPos = 0L
+        $errPos = 0L
+
+        Write-HostLog "starting: devtunnel host $TunnelId"
+        $proc = Start-Process -FilePath $devtunnel `
+            -ArgumentList @('host', $TunnelId) `
+            -NoNewWindow -PassThru `
+            -RedirectStandardOutput $sidecarOut `
+            -RedirectStandardError  $sidecarErr
+
+        $zeroPolls = 0
+        $nullPolls = 0
+        $watchdogKill = $false
+
+        while (-not $proc.HasExited) {
+            Start-Sleep -Seconds $WatchdogIntervalSec
+            $chunk = (Drain-Sidecar $sidecarOut ([ref]$outPos)) +
+                     (Drain-Sidecar $sidecarErr ([ref]$errPos))
+            if ($proc.HasExited) { break }
+
+            if ($chunk -match $AuthFailurePattern) {
+                Write-HostLog "watchdog: auth/token failure in host output, restarting child pid=$($proc.Id)"
+                Stop-Child $proc
+                $watchdogKill = $true
+                break
+            }
+
+            $count = Get-HostConnectionCount $devtunnel $TunnelId
+            if ($null -eq $count) {
+                $nullPolls++
+                Write-HostLog "watchdog: status query failed (null poll $nullPolls/$WatchdogMaxNullPolls)"
+                if ($nullPolls -ge $WatchdogMaxNullPolls) {
+                    Write-HostLog "watchdog: persistent query failure, killing child pid=$($proc.Id)"
+                    Stop-Child $proc
+                    $watchdogKill = $true
+                    break
+                }
+                continue
+            }
+            $nullPolls = 0
+
+            if ($count -ge 1) {
+                if ($zeroPolls -gt 0) {
+                    Write-HostLog "watchdog: host healthy (connections=$count)"
+                }
+                $zeroPolls = 0
+            } else {
+                $zeroPolls++
+                Write-HostLog "watchdog: host connections=0 (poll $zeroPolls/$WatchdogMaxZeroPolls)"
+                if ($zeroPolls -ge $WatchdogMaxZeroPolls) {
+                    Write-HostLog "watchdog: stale host, killing child pid=$($proc.Id)"
+                    Stop-Child $proc
+                    $watchdogKill = $true
+                    break
+                }
+            }
+        }
+
+        if (-not $proc.HasExited) { $proc.WaitForExit(5000) | Out-Null }
+        Drain-Sidecar $sidecarOut ([ref]$outPos) | Out-Null
+        Drain-Sidecar $sidecarErr ([ref]$errPos) | Out-Null
+
+        $ranSec = [int]((Get-Date) - $startedAt).TotalSeconds
+        $reason = if ($watchdogKill) { 'watchdog-killed' } else { 'exited' }
+        Write-HostLog "$reason after ${ranSec}s"
+
+        if ($ranSec -ge 60) { $backoffSec = 2 }
+        Write-HostLog "sleeping ${backoffSec}s before restart"
+        Start-Sleep -Seconds $backoffSec
+        if ($backoffSec -lt $backoffMax) {
+            $backoffSec = [Math]::Min($backoffMax, $backoffSec * 2)
+        }
     }
 }
 finally {
+    Write-HostLog "wrapper exit (pid=$PID)"
     $mutex.ReleaseMutex()
     $mutex.Dispose()
 }
