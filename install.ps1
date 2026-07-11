@@ -690,6 +690,14 @@ function Get-TunnelPort {
             return [int]$match.Matches[0].Groups[1].Value
         }
     }
+    $process = Get-TunnelProcess
+    if ($process) {
+        $listener = Get-NetTCPConnection -State Listen `
+            -OwningProcess $process.Id -ErrorAction SilentlyContinue |
+            Where-Object LocalAddress -In @('127.0.0.1', '::1') |
+            Select-Object -First 1
+        if ($listener) { return [int]$listener.LocalPort }
+    }
     return 0
 }
 
