@@ -408,7 +408,8 @@ finally {
     }
 
     $action = New-ScheduledTaskAction -Execute $powerShell -Argument (
-        '-NoLogo -NoProfile -ExecutionPolicy Bypass ' +
+        '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden ' +
+        '-ExecutionPolicy Bypass ' +
         ('-File "{0}" -TunnelId "{1}"' -f $hostScript, $SelectedTunnelId)
     )
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
