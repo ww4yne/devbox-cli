@@ -197,6 +197,51 @@ if ($nonLoopback) {
 '@
 }
 
+function Test-CloudPcHost {
+    # Detects a Windows 365 Cloud PC via Azure IMDS. On a non-CPC Windows
+    # box, 169.254.169.254 is unreachable and this returns $false quickly.
+    try {
+        $imds = Invoke-RestMethod `
+            -Uri 'http://169.254.169.254/metadata/instance?api-version=2021-02-01' `
+            -Headers @{ Metadata = 'true' } -TimeoutSec 3 -ErrorAction Stop
+        return ($imds.compute.name -like 'CPC_*')
+    } catch {
+        return $false
+    }
+}
+
+function Set-CloudPcAlwaysAwake {
+    # Windows 365 Cloud PCs opt into Cost-Saving Hibernation: the CPC
+    # service (RdAgent / AgentMainService) can call
+    # SetSuspendState(Hibernate) on the guest when Windows App has been
+    # disconnected for a while (observed cadence on Enterprise CPCs:
+    # nightly ~22:00 plus ~60 min after each RDP disconnect). While the
+    # guest is hibernated, `devtunnel host` and every other outbound
+    # connection is frozen; unattended tunnel access breaks until Windows
+    # App reconnects and wakes the CPC.
+    #
+    # Disabling hibernation on the guest blocks that SetSuspendState call,
+    # so devbox-cli's tunnel host stays reachable without an interactive
+    # RDP session. The `requestsoverride` line additionally marks the
+    # running devtunnel process as a system wake-lock, defending against
+    # any idle-timer-based suspend that might exist alongside.
+    Write-Step 'Cloud PC detected: disabling hibernation to keep the tunnel host reachable'
+    Invoke-AsAdministrator @'
+$ErrorActionPreference = 'Stop'
+powercfg /hibernate off | Out-Null
+powercfg /change standby-timeout-ac 0 | Out-Null
+powercfg /change standby-timeout-dc 0 | Out-Null
+powercfg /change hibernate-timeout-ac 0 | Out-Null
+powercfg /change hibernate-timeout-dc 0 | Out-Null
+powercfg /requestsoverride PROCESS devtunnel.exe SYSTEM | Out-Null
+$hibernate = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' `
+    -ErrorAction Stop
+if ($hibernate.HibernateEnabled -ne 0) {
+    throw 'Failed to disable hibernation.'
+}
+'@
+}
+
 function Install-ServerHostScript([string]$SelectedTunnelId) {
     $serverDir = Join-Path $HOME '.devbox-cli\server'
     $hostScript = Join-Path $serverDir 'host.ps1'
@@ -576,6 +621,7 @@ function Wait-TunnelHost([string]$Devtunnel, [string]$TunnelId) {
 
 function Install-Server([string]$SelectedTunnelId) {
     Install-OpenSshServer
+    if (Test-CloudPcHost) { Set-CloudPcAlwaysAwake }
     Install-WingetPackage -PackageId marlocarlo.psmux -CommandName psmux
     Install-WingetPackage -PackageId Microsoft.devtunnel -CommandName devtunnel
 
