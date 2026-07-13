@@ -30,7 +30,8 @@ disconnect and must run `devbox` again to reattach.
 | Server wrapper exits | Task Scheduler retries after one minute. | Recovery requires the Windows user still to have a usable interactive logon context. |
 | Client connector is dead or stale | The next `devbox` invocation checks PID, process start time, executable, and local TCP port before replacing it. | The current terminal does not reconnect automatically. |
 | Windows restarts or the user logs off | OpenSSH starts as a Windows service; the Dev Tunnel task starts at the next user logon. | No remote access exists before that user logs in. psmux processes do not survive reboot. |
-| Windows sleeps, hibernates, or is deallocated | Recovery starts after the machine resumes and outbound networking returns. | No redundant host takes over. |
+| Windows sleeps or hibernates | On a Windows 365 Cloud PC the guest-side hibernation switch is disabled by the Server installer (see "Windows 365 Cloud PC hibernation" below); on any other host, recovery starts after the machine resumes and outbound networking returns. | No redundant host takes over. |
+| The Cloud PC is deallocated by admin action | Recovery starts after the machine resumes and outbound networking returns. | No redundant host takes over. |
 | Windows `sshd` stops after installation | No application-level watchdog currently restarts it. | Administrator action is required if Windows service recovery does not restore it. |
 
 The watchdog parses the human-readable `devtunnel show` host-connection field.
@@ -106,16 +107,52 @@ Re-running the installer is a repair operation, not a failover mechanism.
 Before reusing a tunnel, pass its full canonical ID, including the cluster
 suffix.
 
+## Windows 365 Cloud PC hibernation
+
+Windows 365 Enterprise Cloud PCs opt into a Cost-Saving Hibernation
+policy. When Windows App has been disconnected for roughly an hour (and
+again on a nightly schedule around 22:00 local time on the CPCs
+observed), the Cloud PC service asks the guest to hibernate via
+`SetSuspendState`. While the guest is hibernated the tunnel host, the
+psmux session, and every other outbound connection is frozen. Clients
+see `Host connections: 0` or an HTTP 404 from the Dev Tunnels relay
+until Windows App reconnects and wakes the CPC.
+
+Reconnecting Windows App resumes the CPC within about 30-60 seconds. If
+that is acceptable operationally, no action is needed. If the CPC must
+stay reachable through devbox-cli without ever opening Windows App, the
+Server installer disables hibernation on the guest so the CPC service
+cannot suspend the VM:
+
+```powershell
+powercfg /hibernate off
+powercfg /change standby-timeout-ac 0
+powercfg /change standby-timeout-dc 0
+powercfg /change hibernate-timeout-ac 0
+powercfg /change hibernate-timeout-dc 0
+powercfg /requestsoverride PROCESS devtunnel.exe SYSTEM
+```
+
+`powercfg /a` on a working host reports "Hibernation has not been
+enabled" and lists no low-power states available. The `requestsoverride`
+line additionally marks the running `devtunnel host` as a system
+wake-lock so any idle-timer-based suspend behaves as if the machine is
+in active use.
+
+`Install-Server` runs these commands only when Azure IMDS reports a
+`CPC_*` VM name; a regular workstation is left alone.
+
 ## Review priorities
 
 The largest remaining availability gaps are:
 
-1. The server task depends on interactive user logon.
-2. Persistent Dev Tunnels authentication failure needs user intervention.
-3. Runtime health checks do not verify `sshd` or perform an end-to-end SSH
-   probe.
-4. Client connections do not automatically reconnect.
-5. The access path and psmux host are not replicated.
+1. Persistent Dev Tunnels authentication failure needs user
+   intervention. There is no non-interactive fallback identity for a
+   personal Entra login.
+2. Runtime health checks do not verify `sshd` or perform an end-to-end
+   SSH probe.
+3. Client connections do not automatically reconnect.
+4. The access path and psmux host are not replicated.
 
 Address these only when the operational requirement justifies the additional
 privileges and complexity. For personal development, fast reattachment is
