@@ -118,6 +118,11 @@ psmux session, and every other outbound connection is frozen. Clients
 see `Host connections: 0` or an HTTP 404 from the Dev Tunnels relay
 until Windows App reconnects and wakes the CPC.
 
+After a client connection failure, the generated Windows and macOS clients
+inspect the tunnel state. When the tunnel exists but has no active host, they
+report `Host connections: 0` with explicit remote-machine and Windows App wake
+guidance instead of only forwarding the relay's HTTP 404.
+
 Reconnecting Windows App resumes the CPC within about 30-60 seconds. If
 that is acceptable operationally, no action is needed. If the CPC must
 stay reachable through devbox-cli without ever opening Windows App, the

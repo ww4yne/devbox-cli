@@ -781,6 +781,9 @@ function Stop-TunnelUnsafe {
     $process = Get-TunnelProcess
     if ($process) {
         Stop-Process -Id $process.Id
+        if (-not $process.WaitForExit(10000)) {
+            throw "Dev Tunnel process $($process.Id) did not stop within 10 seconds."
+        }
     }
     Remove-Item $processFile -ErrorAction SilentlyContinue
 }
@@ -820,6 +823,19 @@ function Start-Tunnel {
             if (Test-TcpPort $port) { return }
             if ($process.HasExited) { break }
             Start-Sleep -Milliseconds 500
+        }
+
+        $showJson = & $executable show $config.TunnelId --json 2>$null
+        if ($LASTEXITCODE -eq 0 -and $showJson) {
+            $tunnel = ($showJson | ConvertFrom-Json).tunnel
+            if ([int]$tunnel.hostConnections -eq 0) {
+                throw (
+                    'Dev Tunnel host is offline (Host connections: 0). ' +
+                    'Start or wake the remote machine and ensure its tunnel ' +
+                    'host is running. For a Windows 365 Cloud PC, open it in ' +
+                    'Windows App and wait for the desktop to load, then retry.'
+                )
+            }
         }
 
         Get-Content $outLog, $errLog -Tail 40 -ErrorAction SilentlyContinue

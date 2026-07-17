@@ -216,10 +216,19 @@ with_lock() {
 }
 
 stop_tunnel_locked() {
-  local pid
+  local pid attempt
   pid="$(get_connector_pid)"
   if [[ -n "$pid" ]]; then
-    kill "$pid"
+    if kill "$pid" 2>/dev/null; then
+      for attempt in {1..100}; do
+        if ! kill -0 "$pid" 2>/dev/null; then break; fi
+        sleep 0.1
+      done
+      if kill -0 "$pid" 2>/dev/null; then
+        echo "devbox: connector process $pid did not stop within 10 seconds" >&2
+        return 1
+      fi
+    fi
   fi
   rm -f "$process_file"
 }
@@ -236,7 +245,7 @@ start_tunnel_locked() {
     return
   fi
 
-  stop_tunnel_locked
+  stop_tunnel_locked || return
   : >"$out_log"
   : >"$err_log"
   nohup "$DEVBOX_DEVTUNNEL" connect "$DEVBOX_TUNNEL_ID" \
@@ -257,8 +266,22 @@ start_tunnel_locked() {
   while (( SECONDS < deadline )); do
     port="$(get_port)"
     if port_ready "$port"; then return; fi
+    if ! kill -0 "$pid" 2>/dev/null; then break; fi
     sleep 0.5
   done
+
+  local host_connections
+  host_connections="$(
+    "$DEVBOX_DEVTUNNEL" show "$DEVBOX_TUNNEL_ID" --json 2>/dev/null |
+      grep -Eo '"hostConnections"[[:space:]]*:[[:space:]]*[0-9]+' |
+      grep -Eo '[0-9]+$' || true
+  )"
+  if [[ "$host_connections" == 0 ]]; then
+    echo "devbox: Dev Tunnel host is offline (Host connections: 0)." >&2
+    echo "Start or wake the remote machine and ensure its tunnel host is running." >&2
+    echo "For a Windows 365 Cloud PC, open it in Windows App, wait for the desktop to load, then retry." >&2
+    return 1
+  fi
 
   tail -40 "$out_log" "$err_log" >&2 || true
   echo "devbox: tunnel did not become ready" >&2
@@ -270,7 +293,7 @@ start_tunnel() {
 }
 
 restart_tunnel_locked() {
-  stop_tunnel_locked
+  stop_tunnel_locked || return
   start_tunnel_locked
 }
 
