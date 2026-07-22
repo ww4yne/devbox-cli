@@ -168,11 +168,15 @@ get_connector_pid() {
 }
 
 get_port() {
+  # The tunnel forwards several host ports (22, 2222, 8787). Only the local
+  # forward for host port 22 is the SSH endpoint, so pin to it explicitly;
+  # a bare "last 127.0.0.1:<port>" match would grab the agent port (8787)
+  # and SSH would connect to the wrong service.
   grep -Eho \
-    '(listening on|Forwarding from) 127\.0\.0\.1:[0-9]+' \
+    'Forwarding from 127\.0\.0\.1:[0-9]+ to host port 22\b' \
     "$out_log" "$err_log" 2>/dev/null |
     tail -1 |
-    sed -E 's/.*:([0-9]+)$/\1/'
+    sed -E 's/.*127\.0\.0\.1:([0-9]+) to host port 22.*/\1/'
 }
 
 port_ready() {
